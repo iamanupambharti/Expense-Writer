@@ -26,6 +26,7 @@
         .prose ul { list-style: disc; padding-left: 1.5em; margin-bottom: 1em; }
         .sparkle-btn { background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%); }
         
+        /* Pulse animation for microphone */
         @keyframes pulse-red {
             0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
             70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
@@ -33,6 +34,7 @@
         }
         .listening-pulse { animation: pulse-red 1.5s infinite; }
         
+        /* Fade in for toggling sections */
         .animate-fade-in { animation: fadeIn 0.3s ease-in; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
     </style>
@@ -49,7 +51,11 @@
             const [isWidgetMode, setIsWidgetMode] = useState(false);
             const [showSettings, setShowSettings] = useState(false);
             const [showAnalysis, setShowAnalysis] = useState(false);
-            const [userApiKey, setUserApiKey] = useState("AIzaSyARzEF3VyFD4zhw9QNesicI_tzJpHVIoEE");
+            
+            // SECURITY FIX: Removed hardcoded key. 
+            // The app will now look in LocalStorage or ask you to enter it in Settings.
+            const [userApiKey, setUserApiKey] = useState("");
+            
             const [isAiLoading, setIsAiLoading] = useState(false);
             const [analysisResult, setAnalysisResult] = useState("");
             const [currencySymbol, setCurrencySymbol] = useState('$');
@@ -57,12 +63,15 @@
             const [notification, setNotification] = useState(null);
             const [newLocationInput, setNewLocationInput] = useState("");
 
+            // Smart Add State
             const [showSmartAdd, setShowSmartAdd] = useState(false);
             const [smartInput, setSmartInput] = useState("");
             const [isListening, setIsListening] = useState(false);
             
+            // Ref for recognition to handle cleanup
             const recognitionRef = useRef(null);
 
+            // --- INITIALIZATION & PERSISTENCE ---
             useEffect(() => {
                 try {
                     const savedData = localStorage.getItem('my_excel_expenses');
@@ -73,7 +82,9 @@
                     if (savedData) setExpenses(JSON.parse(savedData));
                     if (savedLocs) setLocations(JSON.parse(savedLocs));
                     if (savedCurr) setCurrencySymbol(savedCurr);
-                    if (savedKey && savedKey.length > 10) setUserApiKey(savedKey);
+                    
+                    // Load key from browser storage if it exists
+                    if (savedKey) setUserApiKey(savedKey);
                 } catch (e) {
                     console.error("Error loading local storage:", e);
                     showNotify("Error loading saved data.");
@@ -86,6 +97,7 @@
             useEffect(() => localStorage.setItem('my_gemini_api_key', userApiKey), [userApiKey]);
             useEffect(() => lucide.createIcons());
 
+            // --- COMPUTED VALUES (MEMOIZED) ---
             const sortedExpenses = useMemo(() => {
                 return [...expenses].sort((a, b) => new Date(b.date) - new Date(a.date));
             }, [expenses]);
@@ -94,6 +106,7 @@
                 return expenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
             }, [expenses]);
 
+            // --- HELPER FUNCTIONS ---
             const showNotify = (msg) => { 
                 setNotification(msg); 
                 setTimeout(() => setNotification(null), 3000); 
@@ -108,6 +121,7 @@
                 return isNaN(num) ? "0.00" : num.toFixed(2);
             };
 
+            // --- API HANDLERS ---
             const callGemini = async (prompt) => {
                 if (!userApiKey) { setShowSettings(true); showNotify("⚠️ Set API Key in Settings first!"); return null; }
                 if (!navigator.onLine) { showNotify("⚠️ No Internet Connection"); return null; }
@@ -129,6 +143,7 @@
                 }
             };
 
+            // Voice Recognition Handler
             const handleVoiceInput = () => {
                 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
                 if (!SpeechRecognition) {
@@ -146,6 +161,7 @@
                 recognition.lang = 'en-US';
                 recognition.continuous = false;
                 recognition.interimResults = false;
+                recognition.maxAlternatives = 1;
 
                 recognition.onstart = () => {
                     setIsListening(true);
@@ -161,8 +177,13 @@
                 recognition.onerror = (event) => {
                     console.error("Speech error", event.error);
                     setIsListening(false);
+                    
                     if (event.error === 'not-allowed') {
                         showNotify("Microphone access denied.");
+                    } else if (event.error === 'network') {
+                        showNotify("Voice command requires Internet.");
+                    } else if (event.error === 'no-speech') {
+                        showNotify("No speech detected. Try again.");
                     } else {
                         showNotify("Voice Error: " + event.error);
                     }
@@ -193,6 +214,7 @@
                 
                 if (result && result !== "Error") {
                     try {
+                        // Optimised parsing: Find first '{' and last '}' to ignore generic AI chatter/markdown
                         const jsonStart = result.indexOf('{');
                         const jsonEnd = result.lastIndexOf('}');
                         
@@ -209,11 +231,12 @@
                                     location: data.location || "Home"
                                 };
                                 
+                                // Case-insensitive duplicate location check
                                 const existingLoc = locations.find(l => l.toLowerCase() === (data.location || "").toLowerCase());
                                 if (!existingLoc && data.location) {
                                     setLocations(prev => [...prev, data.location]);
                                 } else if (existingLoc) {
-                                    newExp.location = existingLoc; 
+                                    newExp.location = existingLoc; // Use canonical casing
                                 }
 
                                 setExpenses(prev => [...prev, newExp]);
@@ -237,6 +260,7 @@
                 if (!expenses.length) return showNotify("No data to analyze!");
                 setShowAnalysis(true); setAnalysisResult(""); setIsAiLoading(true);
                 
+                // Limit data sent to AI to avoid token limits on large datasets
                 const recentExpenses = expenses.slice(-50); 
                 const dataStr = JSON.stringify(recentExpenses.map(e => ({n:e.name, a:e.amount, l:e.location})));
                 
@@ -244,6 +268,7 @@
                 setAnalysisResult(result || "Analysis failed."); setIsAiLoading(false);
             };
 
+            // --- STANDARD HANDLERS ---
             const addExpense = (e) => {
                 e.preventDefault();
                 if (!formData.name.trim() || !formData.amount) {
@@ -268,6 +293,7 @@
             const addLocation = (e) => { 
                 e.preventDefault(); 
                 if(newLocationInput.trim()){ 
+                    // Case insensitive check
                     if (locations.some(l => l.toLowerCase() === newLocationInput.toLowerCase())) {
                         showNotify("Location already exists!");
                         return;
@@ -280,6 +306,7 @@
             const removeLocation = (loc) => {
                 if (locations.length <= 1) return showNotify("Keep at least one location.");
                 setLocations(prev => prev.filter(l => l !== loc));
+                // Reset form data if selected location is removed
                 if (formData.location === loc) {
                     setFormData(prev => ({...prev, location: locations.find(l => l !== loc) || ""}));
                 }
@@ -304,6 +331,7 @@
                 }
             };
 
+            // --- VIEWS ---
             if (showAnalysis) return (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
                     <div className="bg-white rounded-xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto shadow-2xl animate-fade-in">
@@ -384,6 +412,7 @@
                 </div>
             );
 
+            // --- WIDGET MODE RENDER ---
             if (isWidgetMode) return (
                 <div className="h-screen w-screen bg-white p-4 flex flex-col overflow-hidden">
                     <div className="flex justify-between items-start mb-4">
@@ -413,10 +442,11 @@
                 </div>
             );
 
+            // --- MAIN APP RENDER ---
             return (
                 <div className="min-h-screen p-4 md:p-8 max-w-5xl mx-auto">
                     <div className="bg-white rounded-xl shadow-xl overflow-hidden border border-gray-100">
-
+                        {/* Header */}
                         <div className="bg-green-600 p-6 text-white flex justify-between items-center">
                             <h1 className="text-2xl font-bold flex gap-2 items-center"><i data-lucide="sheet" className="w-6 h-6"></i> Expense Tracker</h1>
                             <div className="flex items-center gap-3">
@@ -432,9 +462,9 @@
                             </div>
                         </div>
                         
-
+                        {/* Input Area */}
                         <div className="p-6 bg-gray-50 border-b border-gray-200">
-
+                            {/* Toggle Tabs */}
                             <div className="flex gap-6 mb-6 border-b border-gray-200">
                                 <button 
                                     onClick={() => setShowSmartAdd(false)}
@@ -450,7 +480,7 @@
                                 </button>
                             </div>
 
-
+                            {/* Forms */}
                             {showSmartAdd ? (
                                 <div className="animate-fade-in relative">
                                     <textarea
@@ -461,7 +491,7 @@
                                         disabled={isAiLoading}
                                     />
                                     
-
+                                    {/* Voice Button */}
                                     <button 
                                         onClick={handleVoiceInput}
                                         disabled={isAiLoading}
@@ -511,7 +541,7 @@
                             )}
                         </div>
 
-
+                        {/* List */}
                         <div className="p-6">
                             <div className="overflow-x-auto rounded-lg border border-gray-200 shadow-sm max-h-[500px] overflow-y-auto no-scrollbar">
                                 <table className="excel-grid w-full">
@@ -551,7 +581,7 @@
                                 </table>
                             </div>
                             
-
+                            {/* Footer Actions */}
                             <div className="mt-6 pt-4 border-t border-gray-100 flex justify-between items-center text-sm text-gray-500">
                                 <span>{expenses.length} records found</span>
                                 <button onClick={downloadExcel} className="bg-white border-2 border-green-600 text-green-700 font-bold py-2 px-6 rounded-lg flex items-center gap-2 hover:bg-green-50 transition-colors">
